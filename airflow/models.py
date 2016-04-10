@@ -240,9 +240,15 @@ class DagBag(LoggingMixin):
                     if not dag.full_filepath:
                         dag.full_filepath = filepath
                     dag.is_subdag = False
-                    self.bag_dag(dag, parent_dag=dag, root_dag=dag)
-                    found_dags.append(dag)
-                    found_dags += dag.subdags
+                    try:
+                        dag.validate()
+                    except Exception as e:
+                        logging.error("DAG {} is not valid".format(dag))
+                        raise e
+                    else:
+                        self.bag_dag(dag, parent_dag=dag, root_dag=dag)
+                        found_dags.append(dag)
+                        found_dags += dag.subdags
 
             self.file_last_changed[filepath] = dttm
         return found_dags
@@ -2387,6 +2393,20 @@ class DAG(LoggingMixin):
                 l.append(task.subdag)
                 l += task.subdag.subdags
         return l
+
+    def validate(self):
+        """Raises an error if the DAG is not valid"""
+        try:
+            copy.deepcopy(self)
+        except Exception as e:
+            logging.error("DAG won't deepcopy, attempting task-per-task")
+            for t in self.tasks:
+                logging.debug("Trying task {}".format(t))
+                copy.deepcopy(t)
+            logging.info(
+                "It doesn't appear to be a specific task, raising the "
+                "original exception")
+            raise e
 
     def get_active_runs(self):
         """
