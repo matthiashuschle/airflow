@@ -27,6 +27,8 @@ import dill
 import functools
 import getpass
 import imp
+import importlib
+import zipfile
 import jinja2
 import json
 import logging
@@ -183,11 +185,12 @@ class DagBag(LoggingMixin):
         # If the root_dag_id is absent or expired
         orm_dag = DagModel.get_current(root_dag_id)
         if orm_dag and (
-                root_dag_id not in self.dags or (
-                    dag.last_loaded < (
-                    orm_dag.last_expired or datetime(2100, 1, 1)
+                root_dag_id not in self.dags or
+                (
+                    orm_dag.last_expired and
+                    dag.last_loaded < orm_dag.last_expired
                 )
-        )):
+        ):
             # Reprocessing source file
             found_dags = self.process_file(
                 filepath=orm_dag.fileloc, only_if_updated=False)
@@ -200,53 +203,95 @@ class DagBag(LoggingMixin):
 
     def process_file(self, filepath, only_if_updated=True, safe_mode=True):
         """
-        Given a path to a python module, this method imports the module and
-        look for dag objects within it.
+        Given a path to a python module or zip file, this method imports
+        the module and look for dag objects within it.
         """
         found_dags = []
+
+        # todo: raise exception?
+        if not os.path.isfile(filepath):
+            return found_dags
+
         try:
             # This failed before in what may have been a git sync
             # race condition
             dttm = datetime.fromtimestamp(os.path.getmtime(filepath))
-            mod_name, file_ext = os.path.splitext(os.path.split(filepath)[-1])
-            mod_name = 'unusual_prefix_' + mod_name
+            if only_if_updated \
+                    and filepath in self.file_last_changed \
+                    and dttm == self.file_last_changed[filepath]:
+                return found_dags
+
         except Exception as e:
             logging.exception(e)
             return found_dags
 
-        if safe_mode and os.path.isfile(filepath):
-            # Skip file if no obvious references to airflow or DAG are found.
-            with open(filepath, 'rb') as f:
-                content = f.read()
-                if not all([s in content for s in (b'DAG', b'airflow')]):
-                    return found_dags
+        mods = []
+        if not zipfile.is_zipfile(filepath):
+            if safe_mode and os.path.isfile(filepath):
+                with open(filepath, 'rb') as f:
+                    content = f.read()
+                    if not all([s in content for s in (b'DAG', b'airflow')]):
+                        return found_dags
 
-        if (not only_if_updated or
-                filepath not in self.file_last_changed or
-                dttm != self.file_last_changed[filepath]):
-            try:
-                self.logger.debug("Importing " + filepath)
-                if mod_name in sys.modules:
-                    del sys.modules[mod_name]
-                with timeout(
-                        configuration.getint('core', "DAGBAG_IMPORT_TIMEOUT")):
+            self.logger.debug("Importing {}".format(filepath))
+            org_mod_name, file_ext = os.path.splitext(os.path.split(filepath)[-1])
+            mod_name = 'unusual_prefix_' + org_mod_name
+
+            if mod_name in sys.modules:
+                del sys.modules[mod_name]
+
+            with timeout(configuration.getint('core', "DAGBAG_IMPORT_TIMEOUT")):
+                try:
                     m = imp.load_source(mod_name, filepath)
-            except Exception as e:
-                self.logger.exception("Failed to import: " + filepath)
-                self.import_errors[filepath] = str(e)
-                self.file_last_changed[filepath] = dttm
-                return
+                    mods.append(m)
+                except Exception as e:
+                    self.logger.exception("Failed to import: " + filepath)
+                    self.import_errors[filepath] = str(e)
+                    self.file_last_changed[filepath] = dttm
 
+        else:
+            zip_file = zipfile.ZipFile(filepath)
+            for mod in zip_file.infolist():
+                head, tail = os.path.split(mod.filename)
+                mod_name, ext = os.path.splitext(mod.filename)
+                if not head and (ext == '.py' or ext == '.pyc'):
+                    if mod_name == '__init__':
+                        self.logger.warning("Found __init__.{0} at root of {1}".
+                                            format(ext, filepath))
+
+                    if safe_mode:
+                        with zip_file.open(mod.filename) as zf:
+                            self.logger.debug("Reading {} from {}".
+                                              format(mod.filename, filepath))
+                            content = zf.read()
+                            if not all([s in content for s in (b'DAG', b'airflow')]):
+                                # todo: create ignore list
+                                return found_dags
+
+                    if mod_name in sys.modules:
+                        del sys.modules[mod_name]
+
+                    try:
+                        sys.path.insert(0, filepath)
+                        m = importlib.import_module(mod_name)
+                        mods.append(m)
+                    except Exception as e:
+                        self.logger.exception("Failed to import: " + filepath)
+                        self.import_errors[filepath] = str(e)
+                        self.file_last_changed[filepath] = dttm
+
+        for m in mods:
             for dag in list(m.__dict__.values()):
                 if isinstance(dag, DAG):
                     if not dag.full_filepath:
                         dag.full_filepath = filepath
                     dag.is_subdag = False
+                    dag.module_name = m.__name__
                     self.bag_dag(dag, parent_dag=dag, root_dag=dag)
                     found_dags.append(dag)
                     found_dags += dag.subdags
 
-            self.file_last_changed[filepath] = dttm
+        self.file_last_changed[filepath] = dttm
         return found_dags
 
     @provide_session
@@ -521,6 +566,8 @@ class Connection(Base):
                 return hooks.OracleHook(oracle_conn_id=self.conn_id)
             elif self.conn_type == 'vertica':
                 return contrib_hooks.VerticaHook(vertica_conn_id=self.conn_id)
+            elif self.conn_type == 'cloudant':
+                return contrib_hooks.CloudantHook(cloudant_conn_id=self.conn_id)
         except:
             return None
 
@@ -2338,7 +2385,7 @@ class DAG(LoggingMixin):
             del self.default_args['params']
 
         validate_key(dag_id)
-        self.tasks = []
+        self.task_dict = dict()
         self.dag_id = dag_id
         self.start_date = start_date
         self.end_date = end_date
@@ -2434,12 +2481,21 @@ class DAG(LoggingMixin):
             return dttm - self._schedule_interval
 
     @property
+    def tasks(self):
+        return list(self.task_dict.values())
+
+    @tasks.setter
+    def tasks(self, val):
+        raise AttributeError(
+            'DAG.tasks can not be modified. Use dag.add_task() instead.')
+
+    @property
     def task_ids(self):
-        return [t.task_id for t in self.tasks]
+        return list(self.task_dict.keys())
 
     @property
     def active_task_ids(self):
-        return [t.task_id for t in self.tasks if not t.adhoc]
+        return list(k for k, v in self.task_dict.items() if not v.adhoc)
 
     @property
     def active_tasks(self):
@@ -2764,6 +2820,7 @@ class DAG(LoggingMixin):
         memo[id(self)] = result
         for k, v in list(self.__dict__.items()):
             if k not in ('user_defined_macros', 'params'):
+                print("K: {} V: {}".format(k, v))
                 setattr(result, k, copy.deepcopy(v, memo))
 
         result.user_defined_macros = self.user_defined_macros
@@ -2790,7 +2847,7 @@ class DAG(LoggingMixin):
                 also_include += t.get_flat_relatives(upstream=True)
 
         # Compiling the unique list of tasks that made the cut
-        dag.tasks = list(set(regex_match + also_include))
+        dag.task_dict = {t.task_id: t for t in regex_match + also_include}
         for t in dag.tasks:
             # Removing upstream/downstream references to tasks that did not
             # made the cut
@@ -2804,9 +2861,8 @@ class DAG(LoggingMixin):
         return task_id in (t.task_id for t in self.tasks)
 
     def get_task(self, task_id):
-        for task in self.tasks:
-            if task.task_id == task_id:
-                return task
+        if task_id in self.task_dict:
+            return self.task_dict[task_id]
         raise AirflowException("Task {task_id} not found".format(**locals()))
 
     @provide_session
@@ -2872,6 +2928,7 @@ class DAG(LoggingMixin):
                 "to the DAG ".format(task.task_id))
         else:
             self.tasks.append(task)
+            self.task_dict[task.task_id] = task
             task.dag = self
 
         self.task_count = len(self.tasks)
@@ -3056,7 +3113,6 @@ class Variable(Base):
         session.query(cls).filter(cls.key == key).delete()
         session.add(Variable(key=key, val=stored_value))
         session.flush()
-
 
 
 class XCom(Base):

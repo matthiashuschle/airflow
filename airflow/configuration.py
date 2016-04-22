@@ -118,6 +118,7 @@ defaults = {
         'job_heartbeat_sec': 5,
         'scheduler_heartbeat_sec': 60,
         'authenticate': False,
+        'max_threads': 2,
     },
     'celery': {
         'default_queue': 'default',
@@ -266,7 +267,7 @@ filter_by_owner = False
 email_backend = airflow.utils.email.send_email_smtp
 
 [smtp]
-# If you want airflow to send emails on retries, failure, and you want to
+# If you want airflow to send emails on retries, failure, and you want to use
 # the airflow.utils.email.send_email_smtp function, you have to configure an smtp
 # server here
 smtp_host = localhost
@@ -328,6 +329,11 @@ scheduler_heartbeat_sec = 5
 # statsd_host =  localhost
 # statsd_port =  8125
 # statsd_prefix = airflow
+
+# The scheduler can run multiple threads in parallel to schedule dags.
+# This defines how many threads will run. However airflow will never
+# use more threads than the amount of cpu cores available.
+max_threads = 2
 
 [mesos]
 # Mesos master address which MesosExecutor will connect to.
@@ -414,6 +420,7 @@ default_queue = default
 job_heartbeat_sec = 1
 scheduler_heartbeat_sec = 5
 authenticate = true
+max_threads = 2
 """
 
 
