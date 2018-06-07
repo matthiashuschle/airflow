@@ -52,11 +52,47 @@ class AuthenticationError(Exception):
     pass
 
 
+class HybridBoolFunction(object):
+
+    def __init__(self, rval=True):
+        """
+        Returns the same value if the caller expects a boolean or a function.
+        The issue addressed is that the logic for user authentication is used by
+        both, the airflow web server and flask_auth, while the latter changed the
+        authentication state members from functions without arguments to
+        properties in version 0.3.0.
+
+        :param bool rval: value to be returned by typecast to bool or execution.
+        """
+        self.rval = rval
+
+    def __nonzero__(self):
+        """ Python 2 """
+        return self.rval
+
+    def __bool__(self):
+        """ Python 3 """
+        return self.rval
+
+    def __call__(self):
+        return self.rval
+
+    def __str__(self):
+        return str(self.rval)
+
+    def __repr__(self):
+        return repr(self.rval)
+
+
 class PasswordUser(models.User):
     _password = Column('password', String(255))
 
     def __init__(self, user):
         self.user = user
+
+    is_active = HybridBoolFunction(True)
+    is_authenticated = HybridBoolFunction(True)
+    is_anonymous = HybridBoolFunction(False)
 
     @hybrid_property
     def password(self):
@@ -71,18 +107,6 @@ class PasswordUser(models.User):
     def authenticate(self, plaintext):
         return check_password_hash(self._password, plaintext)
 
-    def is_active(self):
-        """Required by flask_login"""
-        return True
-
-    def is_authenticated(self):
-        """Required by flask_login"""
-        return True
-
-    def is_anonymous(self):
-        """Required by flask_login"""
-        return False
-
     def get_id(self):
         """Returns the current user id as required by flask_login"""
         return str(self.id)
@@ -94,6 +118,25 @@ class PasswordUser(models.User):
     def is_superuser(self):
         """Access all the things"""
         return True
+
+
+class CustomAnonymousUser(object):
+
+    def __init__(self):
+        """
+        Replaces AnonymousUserMixin in login_manager to replace methods by
+        properties in later flask_login versions.
+        """
+        self.is_active = HybridBoolFunction(False)
+        self.is_authenticated = HybridBoolFunction(False)
+        self.is_anonymous = HybridBoolFunction(True)
+
+    def get_id(self):
+        return None
+
+
+if flask_login.__version__ >= '0.3':
+    login_manager.anonymous_user = CustomAnonymousUser
 
 
 @login_manager.user_loader
