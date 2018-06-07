@@ -13,6 +13,23 @@
 # serve to show the default.
 import os
 import sys
+import mock
+
+MOCK_MODULES = [
+    'apiclient',
+    'apiclient.discovery',
+    'apiclient.http',
+    'mesos',
+    'mesos.interface',
+    'mesos.native',
+    'oauth2client.service_account',
+    'pandas.io.gbq',
+    'vertica_python',
+    'pymssql'
+]
+for mod_name in MOCK_MODULES:
+    sys.modules[mod_name] = mock.Mock()
+
 
 # Hack to allow changing for piece of the code to behave differently while
 # the docs are being built. The main objective was to alter the
@@ -38,6 +55,9 @@ extensions = [
     'sphinx.ext.viewcode',
     'sphinxarg.ext',
 ]
+
+autodoc_default_flags = ['show-inheritance', 'members']
+
 viewcode_import = True
 
 # Add any paths that contain templates here, relative to this directory.
@@ -54,7 +74,7 @@ master_doc = 'index'
 
 # General information about the project.
 project = u'Airflow'
-copyright = u'2014, Maxime Beauchemin, Airbnb'
+#copyright = u''
 
 # The version info for the project you're documenting, acts as replacement for
 # |version| and |release|, also used in various other places throughout the
@@ -177,7 +197,7 @@ html_use_index = True
 #html_show_sphinx = True
 
 # If true, "(C) Copyright ..." is shown in the HTML footer. Default is True.
-#html_show_copyright = True
+html_show_copyright = False
 
 # If true, an OpenSearch description file will be output, and all pages will
 # contain a <link> tag referring to it.  The value of this option must be the
@@ -209,7 +229,7 @@ latex_elements = {
 #  author, documentclass [howto, manual, or own class]).
 latex_documents = [
   ('index', 'Airflow.tex', u'Airflow Documentation',
-   u'Maxime Beauchemin', 'manual'),
+   u'Apache Airflow', 'manual'),
 ]
 
 # The name of an image file (relative to this directory) to place at the top of
@@ -239,7 +259,7 @@ latex_documents = [
 # (source start file, name, description, authors, manual section).
 man_pages = [
     ('index', 'airflow', u'Airflow Documentation',
-     [u'Maxime Beauchemin'], 1)
+     [u'Apache Airflow'], 1)
 ]
 
 # If true, show URL addresses after external links.
@@ -253,7 +273,7 @@ man_pages = [
 #  dir menu entry, description, category)
 texinfo_documents = [(
     'index', 'Airflow', u'Airflow Documentation',
-    u'Maxime Beauchemin', 'Airflow',
+    u'Apache Airflow', 'Airflow',
     'Airflow is a system to programmaticaly author, schedule and monitor data pipelines.',
     'Miscellaneous'
 ),]

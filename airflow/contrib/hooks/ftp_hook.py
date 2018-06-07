@@ -1,29 +1,35 @@
 # -*- coding: utf-8 -*-
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-# http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 #
 
 import datetime
 import ftplib
-import logging
 import os.path
 from airflow.hooks.base_hook import BaseHook
 from past.builtins import basestring
 
+from airflow.utils.log.logging_mixin import LoggingMixin
+
 
 def mlsd(conn, path="", facts=None):
-    '''
-    BACKPORT FROM PYTHON3 FTPLIB
+    """
+    BACKPORT FROM PYTHON3 FTPLIB.
 
     List a directory in a standardized format by using MLSD
     command (RFC-3659). If path is omitted the current directory
@@ -35,7 +41,7 @@ def mlsd(conn, path="", facts=None):
     First element is the file name, the second one is a dictionary
     including a variable number of "facts" depending on the server
     and whether "facts" argument has been provided.
-    '''
+    """
     facts = facts or []
     if facts:
         conn.sendcmd("OPTS MLST " + ";".join(facts) + ";")
@@ -54,8 +60,7 @@ def mlsd(conn, path="", facts=None):
         yield (name, entry)
 
 
-class FTPHook(BaseHook):
-
+class FTPHook(BaseHook, LoggingMixin):
     """
     Interact with FTP.
 
@@ -66,6 +71,13 @@ class FTPHook(BaseHook):
     def __init__(self, ftp_conn_id='ftp_default'):
         self.ftp_conn_id = ftp_conn_id
         self.conn = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.conn is not None:
+            self.close_conn()
 
     def get_conn(self):
         """
@@ -80,10 +92,11 @@ class FTPHook(BaseHook):
     def close_conn(self):
         """
         Closes the connection. An error will occur if the
-        connection wasnt ever opened.
+        connection wasn't ever opened.
         """
         conn = self.conn
         conn.quit()
+        self.conn = None
 
     def describe_directory(self, path):
         """
@@ -147,7 +160,7 @@ class FTPHook(BaseHook):
         :type remote_full_path: str
         :param local_full_path_or_buffer: full path to the local file or a
             file-like buffer
-        :type local_full_path: str or file-like buffer
+        :type local_full_path_or_buffer: str or file-like buffer
         """
         conn = self.get_conn()
 
@@ -160,10 +173,9 @@ class FTPHook(BaseHook):
 
         remote_path, remote_file_name = os.path.split(remote_full_path)
         conn.cwd(remote_path)
-        logging.info('Retrieving file from FTP: {}'.format(remote_full_path))
+        self.log.info('Retrieving file from FTP: %s', remote_full_path)
         conn.retrbinary('RETR %s' % remote_file_name, output_handle.write)
-        logging.info('Finished etrieving file from FTP: {}'.format(
-            remote_full_path))
+        self.log.info('Finished retrieving file from FTP: %s', remote_full_path)
 
         if is_path:
             output_handle.close()
@@ -199,7 +211,7 @@ class FTPHook(BaseHook):
 
     def delete_file(self, path):
         """
-        Removes a file on the FTP Server
+        Removes a file on the FTP Server.
 
         :param path: full path to the remote file
         :type path: str
@@ -207,21 +219,41 @@ class FTPHook(BaseHook):
         conn = self.get_conn()
         conn.delete(path)
 
+    def rename(self, from_name, to_name):
+        """
+        Rename a file.
+
+        :param from_name: rename file from name
+        :param to_name: rename file to name
+        """
+        conn = self.get_conn()
+        return conn.rename(from_name, to_name)
+
     def get_mod_time(self, path):
         conn = self.get_conn()
         ftp_mdtm = conn.sendcmd('MDTM ' + path)
-        return datetime.datetime.strptime(ftp_mdtm[4:], '%Y%m%d%H%M%S')
+        time_val = ftp_mdtm[4:]
+        # time_val optionally has microseconds
+        try:
+            return datetime.datetime.strptime(time_val, "%Y%m%d%H%M%S.%f")
+        except ValueError:
+            return datetime.datetime.strptime(time_val, '%Y%m%d%H%M%S')
 
 
 class FTPSHook(FTPHook):
 
     def get_conn(self):
         """
-        Returns a FTPS connection object
+        Returns a FTPS connection object.
         """
         if self.conn is None:
             params = self.get_connection(self.ftp_conn_id)
+
+            if params.port:
+                ftplib.FTP_TLS.port = params.port
+
             self.conn = ftplib.FTP_TLS(
                 params.host, params.login, params.password
             )
+
         return self.conn

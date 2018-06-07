@@ -47,7 +47,7 @@ scope.
 
     dag_1 = DAG('this_dag_will_be_discovered')
 
-    def my_function()
+    def my_function():
         dag_2 = DAG('but_this_dag_will_not')
 
     my_function()
@@ -64,9 +64,10 @@ any of its operators. This makes it easy to apply a common parameter to many ope
 
 .. code:: python
 
-    default_args=dict(
-        start_date=datetime(2016, 1, 1),
-        owner='Airflow')
+    default_args = {
+        'start_date': datetime(2016, 1, 1),
+        'owner': 'Airflow'
+    }
 
     dag = DAG('my_dag', default_args=default_args)
     op = DummyOperator(task_id='dummy', dag=dag)
@@ -110,7 +111,7 @@ Airflow provides operators for many common tasks, including:
 - ``PythonOperator`` - calls an arbitrary Python function
 - ``EmailOperator`` - sends an email
 - ``HTTPOperator`` - sends an HTTP request
-- ``SqlOperator`` - executes a SQL command
+- ``MySqlOperator``, ``SqliteOperator``, ``PostgresOperator``, ``MsSqlOperator``, ``OracleOperator``, ``JdbcOperator``, etc. - executes a SQL command
 - ``Sensor`` - waits for a certain time, file, database row, S3 key, etc...
 
 
@@ -172,7 +173,7 @@ functionally equivalent:
 
 When using the bitshift to compose operators, the relationship is set in the
 direction that the bitshift operator points. For example, ``op1 >> op2`` means
-that ``op1`` runs first and ``op2`` runs seconds. Multiple operators can be
+that ``op1`` runs first and ``op2`` runs second. Multiple operators can be
 composed -- keep in mind the chain is executed left-to-right and the rightmost
 object is always returned. For example:
 
@@ -207,8 +208,7 @@ We can put this all together to build a simple pipeline:
 
     with DAG('my_dag', start_date=datetime(2016, 1, 1)) as dag:
         (
-            dag
-            >> DummyOperator(task_id='dummy_1')
+            DummyOperator(task_id='dummy_1')
             >> BashOperator(
                 task_id='bash_1',
                 bash_command='echo "HELLO!"')
@@ -308,6 +308,8 @@ UI. As slots free up, queued tasks start running based on the
 Note that by default tasks aren't assigned to any pool and their
 execution parallelism is only limited to the executor's setting.
 
+.. _concepts-connections:
+
 Connections
 ===========
 
@@ -324,15 +326,12 @@ from ``BaseHook``, Airflow will choose one connection randomly, allowing
 for some basic load balancing and fault tolerance when used in conjunction
 with retries.
 
-Airflow also has the ability to reference connections via environment
-variables from the operating system. The environment variable needs to be
-prefixed with ``AIRFLOW_CONN_`` to be considered a connection. When
-referencing the connection in the Airflow pipeline, the ``conn_id`` should
-be the name of the variable without the prefix. For example, if the ``conn_id``
-is named ``POSTGRES_MASTER`` the environment variable should be named
-``AIRFLOW_CONN_POSTGRES_MASTER``. Airflow assumes the value returned
-from the environment variable to be in a URI format
-(e.g. ``postgres://user:password@localhost:5432/master``).
+Many hooks have a default ``conn_id``, where operators using that hook do not
+need to supply an explicit connection ID. For example, the default
+``conn_id`` for the :class:`~airflow.hooks.postgres_hook.PostgresHook` is
+``postgres_default``.
+
+See :doc:`howto/manage-connections` for how to create and manage connections.
 
 Queues
 ======
@@ -380,7 +379,7 @@ opposed to XComs that are pushed manually).
 
 If ``xcom_pull`` is passed a single string for ``task_ids``, then the most
 recent XCom value from that task is returned; if a list of ``task_ids`` is
-passed, then a correpsonding list of XCom values is returned.
+passed, then a corresponding list of XCom values is returned.
 
 .. code:: python
 
@@ -409,7 +408,8 @@ Variables
 Variables are a generic way to store and retrieve arbitrary content or
 settings as a simple key value store within Airflow. Variables can be
 listed, created, updated and deleted from the UI (``Admin -> Variables``),
-code or CLI. While your pipeline code definition and most of your constants
+code or CLI. In addition, json settings files can be bulk uploaded through
+the UI. While your pipeline code definition and most of your constants
 and variables should be defined in code and stored in source control,
 it can be useful to have some variables or configuration items
 accessible and modifiable through the UI.
@@ -424,6 +424,18 @@ accessible and modifiable through the UI.
 The second call assumes ``json`` content and will be deserialized into
 ``bar``. Note that ``Variable`` is a sqlalchemy model and can be used
 as such.
+
+You can use a variable from a jinja template with the syntax :
+
+.. code:: bash
+
+    echo {{ var.value.<variable_name> }}
+
+or if you need to deserialize a json object from the variable :
+
+.. code:: bash
+
+    echo {{ var.json.<variable_name> }}
 
 
 Branching
@@ -485,7 +497,7 @@ the main UI. For example:
 
   #dags/subdag.py
   from airflow.models import DAG
-  from airflow.operators import DummyOperator
+  from airflow.operators.dummy_operator import DummyOperator
 
 
   # Dag is returned by a factory method
@@ -510,7 +522,7 @@ This SubDAG can then be referenced in your main DAG file:
   # main_dag.py
   from datetime import datetime, timedelta
   from airflow.models import DAG
-  from airflow.operators import SubDagOperator
+  from airflow.operators.subdag_operator import SubDagOperator
   from dags.subdag import sub_dag
 
 
@@ -594,6 +606,80 @@ that, when set to ``True``, keeps a task from getting triggered if the
 previous schedule for the task hasn't succeeded.
 
 
+Latest Run Only
+===============
+
+Standard workflow behavior involves running a series of tasks for a
+particular date/time range. Some workflows, however, perform tasks that
+are independent of run time but need to be run on a schedule, much like a
+standard cron job. In these cases, backfills or running jobs missed during
+a pause just wastes CPU cycles.
+
+For situations like this, you can use the ``LatestOnlyOperator`` to skip
+tasks that are not being run during the most recent scheduled run for a
+DAG. The ``LatestOnlyOperator`` skips all immediate downstream tasks, and
+itself, if the time right now is not between its ``execution_time`` and the
+next scheduled ``execution_time``.
+
+One must be aware of the interaction between skipped tasks and trigger
+rules. Skipped tasks will cascade through trigger rules ``all_success``
+and ``all_failed`` but not ``all_done``, ``one_failed``, ``one_success``,
+and ``dummy``. If you would like to use the ``LatestOnlyOperator`` with
+trigger rules that do not cascade skips, you will need to ensure that the
+``LatestOnlyOperator`` is **directly** upstream of the task you would like
+to skip.
+
+It is possible, through use of trigger rules to mix tasks that should run
+in the typical date/time dependent mode and those using the
+``LatestOnlyOperator``.
+
+For example, consider the following dag:
+
+.. code:: python
+
+  #dags/latest_only_with_trigger.py
+  import datetime as dt
+
+  from airflow.models import DAG
+  from airflow.operators.dummy_operator import DummyOperator
+  from airflow.operators.latest_only_operator import LatestOnlyOperator
+  from airflow.utils.trigger_rule import TriggerRule
+
+
+  dag = DAG(
+      dag_id='latest_only_with_trigger',
+      schedule_interval=dt.timedelta(hours=4),
+      start_date=dt.datetime(2016, 9, 20),
+  )
+
+  latest_only = LatestOnlyOperator(task_id='latest_only', dag=dag)
+
+  task1 = DummyOperator(task_id='task1', dag=dag)
+  task1.set_upstream(latest_only)
+
+  task2 = DummyOperator(task_id='task2', dag=dag)
+
+  task3 = DummyOperator(task_id='task3', dag=dag)
+  task3.set_upstream([task1, task2])
+
+  task4 = DummyOperator(task_id='task4', dag=dag,
+                        trigger_rule=TriggerRule.ALL_DONE)
+  task4.set_upstream([task1, task2])
+
+In the case of this dag, the ``latest_only`` task will show up as skipped
+for all runs except the latest run. ``task1`` is directly downstream of
+``latest_only`` and will also skip for all runs except the latest.
+``task2`` is entirely independent of ``latest_only`` and will run in all
+scheduled periods. ``task3`` is downstream of ``task1`` and ``task2`` and
+because of the default ``trigger_rule`` being ``all_success`` will receive
+a cascaded skip from ``task1``. ``task4`` is downstream of ``task1`` and
+``task2`` but since its ``trigger_rule`` is set to ``all_done`` it will
+trigger as soon as ``task1`` has been skipped (a valid completion state)
+and ``task2`` has succeeded.
+
+.. image:: img/latest_only_with_trigger.png
+
+
 Zombies & Undeads
 =================
 
@@ -639,12 +725,13 @@ may look like inside your ``airflow_settings.py``:
             task.timeout = timedelta(hours=48)
 
 
-Task Documentation & Notes
-==========================
+Documentation & Notes
+=====================
 
-It's possible to add documentation or notes to your task objects that become
-visible in the "Task Details" view in the web interface. There are a set
-of special task attributes that get rendered as rich content if defined:
+It's possible to add documentation or notes to your dags & task objects that
+become visible in the web interface ("Graph View" for dags, "Task Details" for
+tasks). There are a set of special task attributes that get rendered as rich
+content if defined:
 
 ==========  ================
 attribute   rendered to
@@ -656,11 +743,20 @@ doc_md      markdown
 doc_rst     reStructuredText
 ==========  ================
 
+Please note that for dags, doc_md is the only attribute interpreted.
+
 This is especially useful if your tasks are built dynamically from
 configuration files, it allows you to expose the configuration that led
 to the related tasks in Airflow.
 
 .. code:: python
+
+    """
+    ### My great DAG
+    """
+
+    dag = DAG('my_dag', default_args=default_args)
+    dag.doc_md = __doc__
 
     t = BashOperator("foo", dag=dag)
     t.doc_md = """\
@@ -668,7 +764,10 @@ to the related tasks in Airflow.
     Here's a [url](www.airbnb.com)
     """
 
-This content will get rendered as markdown in the "Task Details" page.
+This content will get rendered as markdown respectively in the "Graph View" and
+"Task Details" pages.
+
+.. _jinja-templating:
 
 Jinja Templating
 ================
@@ -695,7 +794,8 @@ Here, ``{{ ds }}`` is a macro, and because the ``env`` parameter of the
 as an environment variable named ``EXECUTION_DATE`` in your Bash script.
 
 You can use Jinja templating with every parameter that is marked as "templated"
-in the documentation.
+in the documentation. Template substitution occurs just before the pre_execute
+function of your operator is called.
 
 Packaged dags
 '''''''''''''

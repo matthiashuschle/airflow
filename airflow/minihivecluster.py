@@ -30,7 +30,8 @@ class MiniHiveCluster(object):
         cmd = ["java", "-cp", classpath, self._minicluster_class]
 
         self.hive = subprocess.Popen(cmd, bufsize=0, stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE, universal_newlines=True)
+                                     stderr=subprocess.PIPE, universal_newlines=True,
+                                     close_fds=True)
 
     def terminate(self):
         self.hive.terminate()
@@ -40,9 +41,7 @@ class MiniHiveCluster(object):
             rlist, wlist, xlist = select.select([self.hive.stderr, self.hive.stdout], [], [])
             for f in rlist:
                 line = f.readline()
-                print (line,)
+                print(line,)
                 m = re.match(".*Starting ThriftBinaryCLIService", line)
                 if m:
                     return True
-
-

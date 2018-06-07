@@ -11,13 +11,18 @@ The installation is quick and straightforward.
     export AIRFLOW_HOME=~/airflow
 
     # install from pypi using pip
-    pip install airflow
+    pip install apache-airflow
 
     # initialize the database
     airflow initdb
 
     # start the web server, default port is 8080
     airflow webserver -p 8080
+
+    # start the scheduler
+    airflow scheduler
+
+    # visit localhost:8080 in the browser and enable the example dag in the home page
 
 Upon running these commands, Airflow will create the ``$AIRFLOW_HOME`` folder
 and lay an "airflow.cfg" file with defaults that get you going fast. You can
@@ -46,4 +51,4 @@ run the commands below.
 
 What's Next?
 ''''''''''''
-From this point, you can head to the :doc:`tutorial` section for further examples or the :doc:`configuration` section if you're ready to get your hands dirty.
+From this point, you can head to the :doc:`tutorial` section for further examples or the :doc:`howto/index` section if you're ready to get your hands dirty.
